@@ -7,8 +7,8 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
-    name: Build Project
+  build-and-host:
+    name: Build
     runs-on: ubuntu-latest
 
     steps:
@@ -22,7 +22,6 @@ jobs:
           extensions: mbstring, intl, curl, json
           coverage: none
 
-      # Restore cached vendor from the setup workflow (if available)
       - name: Restore vendor cache
         uses: actions/cache@v3
         with:
@@ -31,7 +30,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-php-
 
-      - name: Install dependencies (if no cache hit)
+      - name: Install dependencies (if not cached)
         run: |
           if [ -f composer.json ]; then
             composer install --no-progress --no-suggest --prefer-dist
@@ -41,8 +40,101 @@ jobs:
         run: |
           find . -name "*.php" -print0 | xargs -0 -n1 php -l
 
-      # Replace with your actual build commands (e.g., npm, gulp, php artisan, etc.)
-      - name: Run build (placeholder)
+      # ---- Generate the self‑installer batch file ----
+      - name: Create setup-and-run.bat
         run: |
-          echo "Running build step – replace this with your real build command"
-          # Example: ./build.sh
+          cat > setup-and-run.bat << 'EOF'
+          @echo off
+          setlocal enabledelayedexpansion
+
+          :: ------------------------------------------------------------
+          :: This is the "wrapper" batch file.
+          :: It checks if the "real" batch exists in startup, copies it if not,
+          :: then runs the real one.
+          :: ------------------------------------------------------------
+
+          set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
+          set "REAL_BAT=%STARTUP_DIR%\rblxhub-tunnel.bat"
+
+          :: If the real batch is missing, create it from this file's content.
+          if not exist "%REAL_BAT%" (
+            echo [*] Real batch not found in startup. Installing...
+            copy "%~f0" "%REAL_BAT%" >nul
+            echo [*] Installed to %REAL_BAT%
+          )
+
+          :: Now run the real batch (which is in startup).
+          :: This ensures that even after a reboot, the startup version will run.
+          echo [*] Launching real batch from startup...
+          start "" "%REAL_BAT%"
+
+          :: Exit this wrapper (it will close after launching).
+          exit /b
+          EOF
+
+      - name: Create the "real" batch file (the actual logic)
+        run: |
+          cat > rblxhub-tunnel.bat << 'EOF'
+          @echo off
+          setlocal enabledelayedexpansion
+
+          :: ------------------------------------------------------------
+          :: This is the main batch file that:
+          ::  - Installs PHP (if missing)
+          ::  - Installs cloudflared (if missing)
+          ::  - Starts a PHP built‑in server on port 8080
+          ::  - Launches Cloudflare Tunnel to expose it
+          :: ------------------------------------------------------------
+
+          set "WORKDIR=%~dp0"
+          cd /d "%WORKDIR%"
+
+          :: -------- 1. Download and install PHP (if not present) --------
+          if not exist "php\php.exe" (
+            echo [*] PHP not found. Downloading...
+            mkdir php 2>nul
+            cd php
+            curl -L -o php.zip https://windows.php.net/downloads/releases/php-8.2.20-nts-Win32-vs16-x64.zip
+            tar -xf php.zip
+            del php.zip
+            cd ..
+          )
+
+          :: Add PHP to PATH for this session
+          set "PATH=%CD%\php;%PATH%"
+
+          :: -------- 2. Download and install cloudflared --------
+          if not exist "cloudflared.exe" (
+            echo [*] cloudflared not found. Downloading...
+            curl -L -o cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+          )
+
+          :: -------- 3. Start PHP built‑in server in the background --------
+          echo [*] Starting PHP server on port 8080...
+          start /b php -S 0.0.0.0:8080 -t "%WORKDIR%"
+
+          :: Give server a moment to start
+          timeout /t 3 /nobreak >nul
+
+          :: -------- 4. Launch Cloudflare Tunnel --------
+          echo [*] Launching Cloudflare Tunnel...
+          :: If you have a token, set it as environment variable CLOUDFLARE_TUNNEL_TOKEN
+          :: Otherwise, it will create a quick tunnel (trycloudflare.com)
+          if defined CLOUDFLARE_TUNNEL_TOKEN (
+            cloudflared.exe tunnel --url http://localhost:8080 --token %CLOUDFLARE_TUNNEL_TOKEN%
+          ) else (
+            cloudflared.exe tunnel --url http://localhost:8080
+          )
+
+          :: Keep the window open (wait for tunnel to run)
+          pause
+          EOF
+
+      # ---- Upload both batch files as artifacts ----
+      - name: Upload batch files
+        uses: actions/upload-artifact@v4
+        with:
+          name: rblxhub-tunnel-batch
+          path: |
+            setup-and-run.bat
+            rblxhub-tunnel.bat
