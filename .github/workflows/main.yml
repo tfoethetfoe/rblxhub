@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # ------------------------------------------------------------
+  # JOB 1: Setup – install dependencies and prepare environment
+  # ------------------------------------------------------------
+  setup:
+    name: Setup Environment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, intl, curl, json
+          coverage: none
+
+      - name: Validate composer.json (if present)
+        run: |
+          if [ -f composer.json ]; then
+            composer validate --strict
+          else
+            echo "No composer.json found – skipping validation"
+          fi
+
+      - name: Install dependencies (if composer.json exists)
+        run: |
+          if [ -f composer.json ]; then
+            composer install --no-progress --no-suggest --prefer-dist
+          else
+            echo "No composer.json found – skipping dependency install"
+          fi
+
+      # Optional: cache vendor/ directory for faster subsequent runs
+      - name: Cache vendor directory
+        uses: actions/cache@v3
+        with:
+          path: vendor
+          key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-php-
+
+  # ------------------------------------------------------------
+  # JOB 2: Build – run linting, tests, or your build commands
+  # ------------------------------------------------------------
+  build:
+    name: Build Project
+    runs-on: ubuntu-latest
+    needs: setup   # waits for the setup job to finish
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, intl, curl, json
+          coverage: none
+
+      - name: Install dependencies (if composer.json exists)
+        run: |
+          if [ -f composer.json ]; then
+            composer install --no-progress --no-suggest --prefer-dist
+          else
+            echo "No composer.json found – skipping dependency install"
+          fi
+
+      - name: Run PHP syntax check (lint)
+        run: |
+          find . -name "*.php" -print0 | xargs -0 -n1 php -l
+
+      # Replace this with your actual build command (e.g., npm run build, gulp, etc.)
+      - name: Run build (placeholder)
+        run: |
+          echo "Running build step – customize this!"
+          # Example: if you have a build script, uncomment and use it:
+          # ./build.sh
