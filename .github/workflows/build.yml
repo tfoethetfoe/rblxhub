@@ -1,0 +1,48 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    name: Build Project
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, intl, curl, json
+          coverage: none
+
+      # Restore cached vendor from the setup workflow (if available)
+      - name: Restore vendor cache
+        uses: actions/cache@v3
+        with:
+          path: vendor
+          key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-php-
+
+      - name: Install dependencies (if no cache hit)
+        run: |
+          if [ -f composer.json ]; then
+            composer install --no-progress --no-suggest --prefer-dist
+          fi
+
+      - name: Run PHP syntax check (lint)
+        run: |
+          find . -name "*.php" -print0 | xargs -0 -n1 php -l
+
+      # Replace with your actual build commands (e.g., npm, gulp, php artisan, etc.)
+      - name: Run build (placeholder)
+        run: |
+          echo "Running build step – replace this with your real build command"
+          # Example: ./build.sh
