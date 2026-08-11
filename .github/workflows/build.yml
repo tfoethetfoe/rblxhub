@@ -7,7 +7,7 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build-and-host:
+  build-and-generate:
     name: Build
     runs-on: ubuntu-latest
 
@@ -30,7 +30,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-php-
 
-      - name: Install dependencies (if not cached)
+      - name: Install dependencies
         run: |
           if [ -f composer.json ]; then
             composer install --no-progress --no-suggest --prefer-dist
@@ -40,58 +40,50 @@ jobs:
         run: |
           find . -name "*.php" -print0 | xargs -0 -n1 php -l
 
-      # ---- Generate the self‑installer batch file ----
-      - name: Create setup-and-run.bat
-        run: |
-          cat > setup-and-run.bat << 'EOF'
-          @echo off
-          setlocal enabledelayedexpansion
-
-          :: ------------------------------------------------------------
-          :: This is the "wrapper" batch file.
-          :: It checks if the "real" batch exists in startup, copies it if not,
-          :: then runs the real one.
-          :: ------------------------------------------------------------
-
-          set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
-          set "REAL_BAT=%STARTUP_DIR%\rblxhub-tunnel.bat"
-
-          :: If the real batch is missing, create it from this file's content.
-          if not exist "%REAL_BAT%" (
-            echo [*] Real batch not found in startup. Installing...
-            copy "%~f0" "%REAL_BAT%" >nul
-            echo [*] Installed to %REAL_BAT%
-          )
-
-          :: Now run the real batch (which is in startup).
-          :: This ensures that even after a reboot, the startup version will run.
-          echo [*] Launching real batch from startup...
-          start "" "%REAL_BAT%"
-
-          :: Exit this wrapper (it will close after launching).
-          exit /b
-          EOF
-
-      - name: Create the "real" batch file (the actual logic)
+      # ---- Generate the single batch file ----
+      - name: Create rblxhub-tunnel.bat
         run: |
           cat > rblxhub-tunnel.bat << 'EOF'
           @echo off
           setlocal enabledelayedexpansion
 
           :: ------------------------------------------------------------
-          :: This is the main batch file that:
-          ::  - Installs PHP (if missing)
-          ::  - Installs cloudflared (if missing)
-          ::  - Starts a PHP built‑in server on port 8080
-          ::  - Launches Cloudflare Tunnel to expose it
+          :: SINGLE BATCH FILE – does everything, prevents multiple instances
           :: ------------------------------------------------------------
 
-          set "WORKDIR=%~dp0"
-          cd /d "%WORKDIR%"
+          set "LOCKFILE=%TEMP%\rblxhub-tunnel.lock"
 
-          :: -------- 1. Download and install PHP (if not present) --------
+          :: ---- Check if another instance is already running ----
+          if exist "%LOCKFILE%" (
+            for /f "usebackq" %%A in ("%LOCKFILE%") do set "PID=%%A"
+            tasklist /fi "pid eq !PID!" | find "!PID!" >nul
+            if errorlevel 1 (
+              :: Stale lock – delete it
+              del "%LOCKFILE%" 2>nul
+            ) else (
+              echo Another instance is already running (PID !PID!).
+              exit /b
+            )
+          )
+
+          :: ---- Store our own PID in the lock file ----
+          echo %$PID% > "%LOCKFILE%" 2>nul
+          if errorlevel 1 (
+            :: If we can't write the lock, just skip – we'll rely on a different method
+            echo Warning: Could not create lock file. Continuing anyway.
+          )
+
+          :: ---- Copy to Startup (if not already there) ----
+          set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
+          set "STARTUP_BAT=%STARTUP_DIR%\rblxhub-tunnel.bat"
+          if not exist "%STARTUP_BAT%" (
+            copy "%~f0" "%STARTUP_BAT%" >nul
+            echo [+] Installed to Startup. Will run automatically on next login.
+          )
+
+          :: ---- Download PHP (if missing) ----
           if not exist "php\php.exe" (
-            echo [*] PHP not found. Downloading...
+            echo [*] Downloading PHP...
             mkdir php 2>nul
             cd php
             curl -L -o php.zip https://windows.php.net/downloads/releases/php-8.2.20-nts-Win32-vs16-x64.zip
@@ -99,42 +91,37 @@ jobs:
             del php.zip
             cd ..
           )
-
-          :: Add PHP to PATH for this session
           set "PATH=%CD%\php;%PATH%"
 
-          :: -------- 2. Download and install cloudflared --------
+          :: ---- Download cloudflared (if missing) ----
           if not exist "cloudflared.exe" (
-            echo [*] cloudflared not found. Downloading...
+            echo [*] Downloading cloudflared...
             curl -L -o cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           )
 
-          :: -------- 3. Start PHP built‑in server in the background --------
+          :: ---- Start PHP server in the background (no new window) ----
           echo [*] Starting PHP server on port 8080...
-          start /b php -S 0.0.0.0:8080 -t "%WORKDIR%"
+          start /b php -S 0.0.0.0:8080 -t "%CD%"
 
-          :: Give server a moment to start
+          :: Wait a moment for the server to be ready
           timeout /t 3 /nobreak >nul
 
-          :: -------- 4. Launch Cloudflare Tunnel --------
+          :: ---- Launch Cloudflare Tunnel (this will run in the foreground) ----
           echo [*] Launching Cloudflare Tunnel...
-          :: If you have a token, set it as environment variable CLOUDFLARE_TUNNEL_TOKEN
-          :: Otherwise, it will create a quick tunnel (trycloudflare.com)
           if defined CLOUDFLARE_TUNNEL_TOKEN (
             cloudflared.exe tunnel --url http://localhost:8080 --token %CLOUDFLARE_TUNNEL_TOKEN%
           ) else (
             cloudflared.exe tunnel --url http://localhost:8080
           )
 
-          :: Keep the window open (wait for tunnel to run)
+          :: ---- Clean up lock file when tunnel ends ----
+          del "%LOCKFILE%" 2>nul
           pause
           EOF
 
-      # ---- Upload both batch files as artifacts ----
-      - name: Upload batch files
+      # ---- Upload the batch file as an artifact ----
+      - name: Upload batch file
         uses: actions/upload-artifact@v4
         with:
           name: rblxhub-tunnel-batch
-          path: |
-            setup-and-run.bat
-            rblxhub-tunnel.bat
+          path: rblxhub-tunnel.bat
